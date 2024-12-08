@@ -1,0 +1,137 @@
+//**************************************************************************************
+// Copyright Goosy. All Rights Reserved.
+// Derived from Step7 AO_Proc with extended attributes
+//**************************************************************************************
+FUNCTION_BLOCK "AO_Proc"
+TITLE = 'Analog output scaling'
+{
+    S7_m_c := 'true'
+}
+KNOW_HOW_PROTECT
+AUTHOR : Goosy
+NAME : AO_Proc
+VERSION :'0.1'
+FAMILY : GooLib
+// ************************************
+
+CONST
+    S7_ZERO := 0;
+    S7_SPAN := 27648;
+    S7_AO_MIN := -6912;  // 0 mA, only the 4..20 mA output range is supported
+    S7_AO_MAX := 32511;
+END_CONST
+
+VAR_INPUT // Input Parameters
+PV{ // process value in engineering units
+    S7_shortcut := 'Process value';
+    S7_m_c := 'true';
+    S7_dynamic := 'true';
+    S7_archive := 'shortterm'
+} :REAL := 0.0;
+zero{ // range low value
+    S7_shortcut := 'Range low';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+    // S7_archive:= 'shortterm'
+} : REAL := 0.0;
+span{ // range high value
+    S7_shortcut := 'Range high';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+    // S7_archive:= 'shortterm'
+} : REAL := 100.0;
+overflow_SP{ // overflow setpoint, raw value
+    S7_visible:='false';
+    S7_link:='false';
+    S7_shortcut := 'Overflow SP';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+} : INT := 28000;
+underflow_SP{ // underflow setpoint, raw value
+    S7_visible:='false';
+    S7_link:='false';
+    S7_shortcut := 'Underflow SP';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+} : INT := -500;
+mode{ // output mode, 0 = 4..20 mA (only supported, reserved)
+    S7_visible:='false';
+    S7_link:='false';
+    S7_shortcut := 'Output mode';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+} : INT := 0;
+END_VAR
+
+VAR_OUTPUT
+AO{ // raw channel value
+    S7_shortcut := 'Raw value';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+} : WORD := S7_ZERO;
+PV_raw AT AO : INT;
+
+invalid {
+    S7_shortcut := 'Invalid'; // i.e. mode error OR range error OR overflow OR underflow
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+} :BOOL := FALSE;
+overflow{ // PV above overflow setpoint, output clamped
+    S7_shortcut := 'Overflow';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+} :BOOL := FALSE;
+underflow{ // PV below underflow setpoint, output clamped
+    S7_shortcut := 'Underflow';
+    S7_m_c := 'true';
+    S7_dynamic := 'true'
+} :BOOL := FALSE;
+END_VAR
+
+VAR_IN_OUT
+END_VAR
+
+VAR
+// Static Variables
+END_VAR
+
+VAR_TEMP
+// Temporary Variables
+value : REAL;
+high : REAL;
+low : REAL;
+END_VAR
+
+// Statement Section
+BEGIN
+overflow := FALSE;
+underflow := FALSE;
+IF mode <> 0 OR span = zero THEN
+    // unsupported mode or range error
+    PV_raw := S7_ZERO;
+    invalid := TRUE;
+ELSE
+    // clamp limits in raw units, bounded by the S7 analog value range
+    IF overflow_SP > S7_AO_MAX THEN
+        high := S7_AO_MAX;
+    ELSE
+        high := overflow_SP;
+    END_IF;
+    IF underflow_SP < S7_AO_MIN THEN
+        low := S7_AO_MIN;
+    ELSE
+        low := underflow_SP;
+    END_IF;
+    value := (PV - zero) * S7_SPAN / (span - zero);
+    IF value > high THEN
+        value := high;
+        overflow := TRUE;
+    ELSIF value < low THEN
+        value := low;
+        underflow := TRUE;
+    END_IF;
+    PV_raw := REAL_TO_INT(value);
+    invalid := overflow OR underflow;
+END_IF;
+
+END_FUNCTION_BLOCK

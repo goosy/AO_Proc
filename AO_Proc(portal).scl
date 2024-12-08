@@ -1,0 +1,72 @@
+﻿FUNCTION_BLOCK "AO_Proc"
+{ S7_Optimized_Access := 'FALSE' }
+VERSION:0.1
+KNOW_HOW_PROTECT
+AUTHOR:Goosy
+NAME:AO_Proc
+FAMILY:GooLib
+
+VAR CONSTANT
+    S7_ZERO := 0;
+    S7_SPAN := 27648;
+    S7_AO_MIN := -6912;  // 0 mA, only the 4..20 mA output range is supported
+    S7_AO_MAX := 32511;
+END_VAR
+
+VAR_INPUT
+    PV : Real;                   // process value in engineering units
+    zero : Real;                 // range low value
+    span : Real := 100.0;        // range high value
+    overflow_SP : Int := 28000;  // overflow setpoint, raw value
+    underflow_SP : Int := -500;  // underflow setpoint, raw value
+    mode : Int := 0;             // output mode, 0 = 4..20 mA (only supported, reserved)
+END_VAR
+
+VAR_OUTPUT
+    AO : Word;        // raw channel value
+    PV_raw AT AO : INT;
+    invalid : Bool;   // i.e. mode error OR range error OR overflow OR underflow
+    overflow : Bool;  // PV above overflow setpoint, output clamped
+    underflow : Bool; // PV below underflow setpoint, output clamped
+END_VAR
+
+VAR
+END_VAR
+
+VAR_TEMP
+    value : Real;
+    high : Real;
+    low : Real;
+END_VAR
+
+BEGIN
+#overflow := FALSE;
+#underflow := FALSE;
+IF #mode <> 0 OR #span = #zero THEN
+    // unsupported mode or range error
+    #PV_raw := #S7_ZERO;
+    #invalid := TRUE;
+ELSE
+    // clamp limits in raw units, bounded by the S7 analog value range
+    IF #overflow_SP > #S7_AO_MAX THEN
+        #high := #S7_AO_MAX;
+    ELSE
+        #high := #overflow_SP;
+    END_IF;
+    IF #underflow_SP < #S7_AO_MIN THEN
+        #low := #S7_AO_MIN;
+    ELSE
+        #low := #underflow_SP;
+    END_IF;
+    #value := (#PV - #zero) * #S7_SPAN / (#span - #zero);
+    IF #value > #high THEN
+        #value := #high;
+        #overflow := TRUE;
+    ELSIF #value < #low THEN
+        #value := #low;
+        #underflow := TRUE;
+    END_IF;
+    #PV_raw := REAL_TO_INT(#value);
+    #invalid := #overflow OR #underflow;
+END_IF;
+END_FUNCTION_BLOCK
