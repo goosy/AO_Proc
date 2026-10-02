@@ -1,75 +1,89 @@
-# S7 AO 通道常规处理子过程
+# S7 AO Channel Processing Block
 
-将工程单位数值线性转换为 AO 模块通道值（0 ~ 27648），并对超出范围的值限幅。
+English | [简体中文](README.zh-cn.md)
 
-## 说明
+Linearly scales an engineering value to an AO module channel value (unipolar 0 ~ 27648, bipolar -27648 ~ 27648) and clamps out-of-range values.
 
-**仅支持硬件组态为 4 ~ 20 mA 的输出通道。** `mode` 为预留参数，目前只能为 0（4 ~ 20 mA）。
+## Overview
 
-- 用于博途的SCL源码：AO_Proc(portal).scl
-- 用于Step7的SCL源码：AO_Proc(step7).scl
-- 用于PCS7的SCL源码：AO_Proc(pcs7).scl
+`mode` must match the output type configured in the hardware:
 
-## 处理逻辑
+| mode | Output range | Category | Hardware range (raw value) | underflow_SP default |
+|---|---|---|---|---|
+| 0 | 4 ~ 20 mA | 1. Unipolar, offset zero | -6912 ~ 32511 | -500 (≈ 3.71 mA) |
+| 1 | 0 ~ 20 mA | 2. Unipolar, no offset | 0 ~ 32511 | 0 |
+| 2 | 0 ~ 10 V | 2. Unipolar, no offset | 0 ~ 32511 | 0 |
+| 3 | 1 ~ 5 V | 1. Unipolar, offset zero | -6912 ~ 32511 | -500 (≈ 0.93 V) |
+| 4 | ±10 V | 3. Bipolar | -32512 ~ 32511 | -28000 (≈ -10.13 V) |
+| 5 | ±20 mA | 3. Bipolar | -32512 ~ 32511 | -28000 (≈ -20.25 mA) |
 
-- `AO = (PV - zero) / (span - zero) × 27648`，四舍五入取整
-- 上限为 `overflow_SP`，下限为 `underflow_SP`，均为通道原始值，
-  且不超出 S7 模拟量范围 -6912 ~ 32511（4 ~ 20 mA 时对应 0 ~ 22.81 mA）
-- 超过上限时 AO 限幅为上限并置 `overflow`；低于下限时限幅为下限并置 `underflow`
-- `mode <> 0`（不支持的模式）或 `span = zero`（量程设置错误）时，AO 输出 0
-- `invalid = 模式错误 OR 量程错误 OR overflow OR underflow`
+`overflow_SP` defaults to 28000 (≈ 20.20 mA for 4 ~ 20 mA, ≈ 10.13 V for 0 ~ 10 V). See [design.md](design.md) for the design notes.
 
-## 调用示例
+- SCL source for TIA Portal: AO_Proc(portal).scl
+- SCL source for Step7: AO_Proc(step7).scl
+- SCL source for PCS7: AO_Proc(pcs7).scl
 
-调用时，先建立对应的背景数据块，比如"FV001"，调用时所有参数可省略，直接操纵背景块。
-`overflow_SP`、`underflow_SP`、`mode` 的显式赋值是可选的，省略时使用默认值 28000、-500 和 0。
+## Processing
 
-注：下方_name_表示具体变量
+- `AO = raw_zero + (PV - zero) / (span - zero) × (27648 - raw_zero)`, rounded to the nearest integer;
+  `raw_zero` is 0 for unipolar and -27648 for bipolar ranges
+- The high limit is `overflow_SP` and the low limit is `underflow_SP`, both raw values, bounded by the hardware range in the table above
+- When `underflow_SP = -32768` (the default), the low limit is the default of the category for the given mode (see the table above)
+- Above the high limit, AO is clamped to the high limit and `overflow` is set; below the low limit, AO is clamped to the low limit and `underflow` is set
+- When `mode` is outside 0 ~ 5 (mode error) or `span = zero` (range error), AO outputs 0
+- `invalid = mode error OR range error OR overflow OR underflow`
 
-1. 在 TIA Portal 中调用示例：
+## Usage
+
+Create an instance DB first, e.g. "FV001". All parameters can be omitted in the call and accessed directly through the instance DB.
+Assigning `overflow_SP`, `underflow_SP` and `mode` is optional; when omitted, they default to 28000, -32768 (category default low limit) and 0.
+
+Note: _name_ below stands for an actual variable.
+
+1. Call in TIA Portal:
 
     ```Pascal
     "FV001"(
-            PV:=_real_in_,          // 输出量工程单位数值
-            zero:=0.0,              // 量程低值
-            span:=100.0,            // 量程高值
-            overflow_SP:=28000,     // 可选，上溢出值（通道原始值），默认 28000
-            underflow_SP:=-500,     // 可选，下溢出值（通道原始值），默认 -500
-            mode:=0,                // 可选，输出模式，0 = 4 ~ 20 mA（目前唯一支持），默认 0
-            AO=>_word_out_,         // 模块输出通道值，最好定义一个对应PQW通道的符号
-            invalid=>_bool_out_,    // 数据无效，即 模式错误 OR 量程错误 OR overflow OR underflow
-            overflow=>_bool_out_,   // 高溢出，已限幅
-            underflow=>_bool_out_); // 低溢出，已限幅
+            PV:=_real_in_,          // output value in engineering units
+            zero:=0.0,              // range low value
+            span:=100.0,            // range high value
+            overflow_SP:=28000,     // optional, overflow setpoint (raw value), default 28000
+            underflow_SP:=-500,     // optional, underflow setpoint (raw value), default -32768 = category default
+            mode:=0,                // optional, output mode 0 ~ 5, see table above, default 0 = 4 ~ 20 mA
+            AO=>_word_out_,         // module channel value, preferably a symbol for the PQW channel
+            invalid=>_bool_out_,    // data invalid, i.e. mode error OR range error OR overflow OR underflow
+            overflow=>_bool_out_,   // overflow, output clamped
+            underflow=>_bool_out_); // underflow, output clamped
     ```
 
-1. 在 Step7 V5.5 中SCL调用示例：
+1. SCL call in Step7 V5.5:
 
     ```Pascal
     AO_Proc.FV001(
-        PV                  := _real_in_,     // 输出量工程单位数值
-        zero                := 0.0,           // 量程低值
-        span                := 100.0,         // 量程高值
-        overflow_SP         := 28000,         // 可选，上溢出值（通道原始值），默认 28000
-        underflow_SP        := -500,          // 可选，下溢出值（通道原始值），默认 -500
-        mode                := 0);            // 可选，输出模式，0 = 4 ~ 20 mA（目前唯一支持），默认 0
-    PQW256 := FV001.AO;                       // 模块输出通道值
-    _bool_out_ := FV001.invalid;              // 数据无效
-    _bool_out_ := FV001.overflow;             // 高溢出
-    _bool_out_ := FV001.underflow;            // 低溢出
+        PV                  := _real_in_,     // output value in engineering units
+        zero                := 0.0,           // range low value
+        span                := 100.0,         // range high value
+        overflow_SP         := 28000,         // optional, overflow setpoint (raw value), default 28000
+        underflow_SP        := -500,          // optional, underflow setpoint (raw value), default -32768 = category default
+        mode                := 0);            // optional, output mode 0 ~ 5, see table above, default 0 = 4 ~ 20 mA
+    PQW256 := FV001.AO;                       // module channel value
+    _bool_out_ := FV001.invalid;              // data invalid
+    _bool_out_ := FV001.overflow;             // overflow
+    _bool_out_ := FV001.underflow;            // underflow
     ```
 
-1. 在 Step7 V5.5 中STL调用示例：
+1. STL call in Step7 V5.5:
 
     ```Pascal
     CALL  "AO_Proc" , "FV001"(
-        PV                  := _real_in_,     // 输出量工程单位数值
-        zero                := 0.0,           // 量程低值
-        span                := 100.0,         // 量程高值
-        overflow_SP         := 28000,         // 可选，上溢出值（通道原始值），默认 28000
-        underflow_SP        := -500,          // 可选，下溢出值（通道原始值），默认 -500
-        mode                := 0,             // 可选，输出模式，0 = 4 ~ 20 mA（目前唯一支持），默认 0
-        AO                  := PQW256,        // 模块输出通道值
-        invalid             := _bool_out_,    // 数据无效
-        overflow            := _bool_out_,    // 高溢出
-        underflow           := _bool_out_);   // 低溢出
+        PV                  := _real_in_,     // output value in engineering units
+        zero                := 0.0,           // range low value
+        span                := 100.0,         // range high value
+        overflow_SP         := 28000,         // optional, overflow setpoint (raw value), default 28000
+        underflow_SP        := -500,          // optional, underflow setpoint (raw value), default -32768 = category default
+        mode                := 0,             // optional, output mode 0 ~ 5, see table above, default 0 = 4 ~ 20 mA
+        AO                  := PQW256,        // module channel value
+        invalid             := _bool_out_,    // data invalid
+        overflow            := _bool_out_,    // overflow
+        underflow           := _bool_out_);   // underflow
     ```

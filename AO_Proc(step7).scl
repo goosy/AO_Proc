@@ -1,6 +1,6 @@
 FUNCTION_BLOCK "AO_Proc"
 TITLE='Analog output scaling'
-VERSION:'0.1'
+VERSION:'0.2'
 KNOW_HOW_PROTECT
 AUTHOR:Goosy
 NAME:AO_Proc
@@ -9,17 +9,25 @@ FAMILY:GooLib
 CONST
     S7_ZERO := 0;
     S7_SPAN := 27648;
-    S7_AO_MIN := -6912;  // 0 mA, only the 4..20 mA output range is supported
-    S7_AO_MAX := 32511;
+    S7_BIPOLAR_ZERO := -27648;    // raw value at range low, cat.3 bipolar
+    S7_AO_MIN1 := -6912;          // hardware low limit, cat.1 (0 mA / 0 V)
+    S7_AO_MIN2 := 0;              // hardware low limit, cat.2 (0 mA / 0 V)
+    S7_AO_MIN3 := -32512;         // hardware low limit, cat.3 (-23.52 mA / -11.76 V)
+    S7_AO_MAX := 32511;           // hardware high limit, all categories
+    OVERFLOW_SP_DEF := 28000;     // overflow setpoint default, all categories
+    UNDERFLOW_SP_DEF1 := -500;    // underflow setpoint default, cat.1 unipolar with offset (4..20 mA, 1..5 V)
+    UNDERFLOW_SP_DEF2 := 0;       // underflow setpoint default, cat.2 unipolar (0..20 mA, 0..10 V)
+    UNDERFLOW_SP_DEF3 := -28000;  // underflow setpoint default, cat.3 bipolar (+/-20 mA, +/-10 V)
+    UNDERFLOW_SP_AUTO := -32768;  // sentinel: use the category default
 END_CONST
 
 VAR_INPUT
-    PV {S7_m_c := 'true'} : REAL ;                   // process value in engineering units
-    zero {S7_m_c := 'true'} : REAL ;                 // range low value
-    span {S7_m_c := 'true'} : REAL := 100.0;         // range high value
-    overflow_SP {S7_m_c := 'true'} : INT := 28000;   // overflow setpoint, raw value
-    underflow_SP {S7_m_c := 'true'} : INT := -500;   // underflow setpoint, raw value
-    mode {S7_m_c := 'true'} : INT := 0;              // output mode, 0 = 4..20 mA (only supported, reserved)
+    PV {S7_m_c := 'true'} : REAL ;                               // process value in engineering units
+    zero {S7_m_c := 'true'} : REAL ;                             // range low value
+    span {S7_m_c := 'true'} : REAL := 100.0;                     // range high value
+    overflow_SP {S7_m_c := 'true'} : INT := OVERFLOW_SP_DEF;     // overflow setpoint, raw value
+    underflow_SP {S7_m_c := 'true'} : INT := UNDERFLOW_SP_AUTO;  // underflow setpoint, raw value, -32768 = category default
+    mode {S7_m_c := 'true'} : INT := 0;                          // output mode, 0 = 4..20 mA, 1 = 0..20 mA, 2 = 0..10 V, 3 = 1..5 V, 4 = +/-10 V, 5 = +/-20 mA
 END_VAR
 
 VAR_OUTPUT
@@ -37,12 +45,33 @@ VAR_TEMP
     value : REAL ;
     high : REAL ;
     low : REAL ;
+    raw_zero : REAL ;  // raw value at range low
+    raw_min : INT ;    // hardware low limit
+    def_low : INT ;    // underflow setpoint default
+    mode_err : BOOL ;
 END_VAR
 
 BEGIN
 overflow := FALSE;
 underflow := FALSE;
-IF mode <> 0 OR span = zero THEN
+mode_err := FALSE;
+CASE mode OF
+    0, 3:  // cat.1 unipolar with offset
+        raw_zero := S7_ZERO;
+        raw_min := S7_AO_MIN1;
+        def_low := UNDERFLOW_SP_DEF1;
+    1, 2:  // cat.2 unipolar
+        raw_zero := S7_ZERO;
+        raw_min := S7_AO_MIN2;
+        def_low := UNDERFLOW_SP_DEF2;
+    4, 5:  // cat.3 bipolar
+        raw_zero := S7_BIPOLAR_ZERO;
+        raw_min := S7_AO_MIN3;
+        def_low := UNDERFLOW_SP_DEF3;
+ELSE
+    mode_err := TRUE;
+END_CASE;
+IF mode_err OR span = zero THEN
     // unsupported mode or range error
     PV_raw := S7_ZERO;
     invalid := TRUE;
@@ -53,12 +82,14 @@ ELSE
     ELSE
         high := overflow_SP;
     END_IF;
-    IF underflow_SP < S7_AO_MIN THEN
-        low := S7_AO_MIN;
+    IF underflow_SP = UNDERFLOW_SP_AUTO THEN
+        low := def_low;
+    ELSIF underflow_SP < raw_min THEN
+        low := raw_min;
     ELSE
         low := underflow_SP;
     END_IF;
-    value := (PV - zero) * S7_SPAN / (span - zero);
+    value := raw_zero + (PV - zero) * (S7_SPAN - raw_zero) / (span - zero);
     IF value > high THEN
         value := high;
         overflow := TRUE;
