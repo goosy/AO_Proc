@@ -1,4 +1,4 @@
-﻿FUNCTION_BLOCK "AO_Proc"
+FUNCTION_BLOCK "AO_Proc"
 { S7_Optimized_Access := 'FALSE' }
 VERSION:0.2
 KNOW_HOW_PROTECT
